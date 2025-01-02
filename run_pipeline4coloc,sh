@@ -1,0 +1,36 @@
+#!/bin/bash 
+
+# Check if an argument was provided
+if [ $# -eq 0 ]; then
+    echo "No arguments supplied. Please provide a directory name and a file names for a GWAS summary statistic."
+    echo "and a final result name."
+    echo "Usage: $0 GWAS_SUM_dir GWAS_SUM_file_name output_file_name batch_#"
+    exit 1
+fi
+
+gwasdir=$1
+gwasname=$2
+eqtldir=$3
+finaloutputname=$4
+batch=$5
+
+chmod +x codes/filter_sumstats.sh 
+chmod +x codes/identify_significant_ld_blocks.sh 
+#chmod +x codes/compute_ld_matrices_for_significant_blocks.sh 
+chmod +x codes/prepare_coloc_input_for_significant_blocks.sh 
+#chmod +x codes/run_coloc_for_significant_blocks.sh 
+
+./codes/filter_sumstats.sh ${gwasdir} ${gwasname}
+./codes/identify_significant_ld_blocks.sh
+#./codes/compute_ld_matrices_for_significant_blocks.sh 
+./codes/prepare_coloc_input_for_significant_blocks.sh ${gwasdir} ${gwasname} ${eqtldir} ${batch}
+#./codes/run_coloc_for_significant_blocks.sh ${finaloutputname} ${batch}
+
+echo "The fine-mapping analysis is completed for ${gwasname} using SuSieR."
+
+# Create the archive for all SuSiE results
+#tar -czvf "coloc_results/${finaloutputname}_coloc_results.tar.gz" "coloc_results/${finaloutputname}_"*
+# Remove all SuSiE results
+#rm "coloc_results/${finaloutputname}_"*.rds "coloc_results/${finaloutputname}_"*.txt
+rm coloc_inputs/${batch}/gwasA_block_*.txt
+
