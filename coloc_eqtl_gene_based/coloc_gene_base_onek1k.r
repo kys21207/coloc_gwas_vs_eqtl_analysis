@@ -11,39 +11,41 @@ library(data.table)
 # Input arguments
 args <- commandArgs(trailingOnly = TRUE)
 
-eqtl_file        <- args[1]
-gwas_dir         <- args[2]
-output_dir       <- args[3]
+gwas_file            <- args[1]
+eqtl_file            <- args[2]
+eqtl_samplesize_file <- args[3]
+output_dir           <- args[4]
 
-eqtl_recode <- read.table("/mnt/project/publically_available_supporting_files/onek1k/oneK1K_samplesize.csv",header=T,sep=",")
-#gwas_files <-"/mnt/project/genuity_data/time2event_results/ms_all_comers_age_onset.regenie.gz"
-gwas_files <- list.files(path = gwas_dir, pattern = "\\.regenie.tsv.gz$", full.names = TRUE)
-# oneK1K data parameters
-#molecular_trait_id      chromosome      position        ref     alt     variant ma_samples      maf     pvalue  beta    se      type    ac      an      r2      molecular_trait_object_id     gene_id median_tpm      rsid
-eqtl_file <- "/mnt/project/publically_available_supporting_files/onek1k/cDC2.all.tsv.gz"
-eqtl_data <- fread(eqtl_file)
-eqtl_file_prefix <- sub("\\.all\\.tsv\\.gz$", "", basename(eqtl_file))
-#eqtl_cell <- sub("^celltype-eqtl-sumstats\\.", "", eqtl_file_prefix)
-eqtl_cell <-eqtl_file_prefix
+#gwas_file="/opt/notebooks/tmp_input/parkinson_all_comers_age_onset_subset.tsv.gz"
+#eqtl_file="/opt/notebooks/tmp_input/B_intermediate_subset.tsv.gz"
+#eqtl_samplesize_file="/mnt/project/publically_available_supporting_files/onek1k/oneK1K_samplesize.csv" 
+#output_dir="/opt/notebooks/results"
+#eqtl_file="tmp_input/B_intermediate_subset.tsv.gz"
+#gwas_file="tmp_input/ibd_all_comers_age_onset_subset.tsv.gz"
 
-eqtl_sample_size <- subset(eqtl_recode, sample_group == eqtl_file_prefix)
+gwas_data  <- fread(gwas_file)
+eqtl_data  <- fread(eqtl_file)
+eqtl_file_prefix <- sub("\\_subset\\.tsv\\.gz$", "", basename(eqtl_file))
+gwas_file_prefix <- sub("\\.regenie\\.tsv\\.gz$", "", basename(gwas_file))
+eqtl_samplesize_data <- read.table(eqtl_samplesize_file,header=T,sep=",")
+eqtl_sample_size <- subset(eqtl_samplesize_data, sample_group == eqtl_file_prefix)
 
 #--------------------------------------------------
 # 2. Format eQTL SNP ID to chr:pos:REF:ALT
 #--------------------------------------------------
 #eqtl_data[, chr38 := gsub("chr", "", chr38)]  # Remove "chr" prefix
-eqtl_data[, chromosome := as.numeric(chromosome)]
-eqtl_data <- eqtl_data[!is.na(chromosome)] # remove rows for X,Y, and MT
-eqtl_data[, formatted_snp := paste(chromosome, position, ref, alt, sep = ":")]
+eqtl_data[, chr := as.numeric(chr)]
+eqtl_data <- eqtl_data[!is.na(chr)] # remove rows for X,Y, and MT
+eqtl_data[, formatted_snp := paste(chr, pos, ref, alt, sep = ":")]
 
 #--------------------------------------------------
 # 3. List of unique genes
 #--------------------------------------------------
-all_genes <- unique(eqtl_data$molecular_trait_id)
+all_genes <- unique(eqtl_data$ensgid)
 
-for (gwas in gwas_files){
-print(gwas)
-gwas_data <- fread(gwas)
+#for (gwas in gwas_files){
+print(gwas_file_prefix)
+#gwas_data <- fread(gwas)
 
 #--------------------------------------------------
 # 4. Initialize a list to store results
@@ -58,19 +60,20 @@ eQTL_N  <-  eqtl_sample_size$sample_size   # eQTL total sample size
 # 5. Loop over each gene
 #--------------------------------------------------
 for (gene in all_genes) {
+#    print(gene)
   
   # Subset eQTL data for this gene
-  eqtl_sub <- eqtl_data[molecular_trait_id == gene]
+  eqtl_sub <- eqtl_data[ensgid == gene]
   
   # If no eQTL SNPs, skip
   if (nrow(eqtl_sub) < 1) next
   
   # Identify chromosome
-  chr_of_interest <- unique(eqtl_sub$chromosome)
+  chr_of_interest <- unique(eqtl_sub$chr)
   if (length(chr_of_interest) != 1) next  # Skip if multiple chromosomes for a gene
   
   # Subset GWAS to matching chromosome and positions
-  eqtl_positions <- unique(eqtl_sub$position)
+  eqtl_positions <- unique(eqtl_sub$pos)
   gwas_sub <- gwas_data[CHROM == chr_of_interest & GENPOS %in% eqtl_positions]
 
   # If no overlapping GWAS SNPs, skip
@@ -82,7 +85,7 @@ for (gene in all_genes) {
   
   # Merge GWAS and eQTL by chromosome & position
   merged_snps <- merge(eqtl_sub, gwas_sub, 
-                       by.x = c("chromosome", "position"), 
+                       by.x = c("chr", "pos"), 
                        by.y = c("CHROM", "GENPOS"))
 
   if (nrow(merged_snps) < 1) next  # Skip if no shared SNPs
@@ -94,11 +97,13 @@ for (gene in all_genes) {
   merged_snps[strand_flipped == TRUE, `:=` (
       beta= -1 * beta,
       maf = 1-maf,
-      formatted_snp = paste(chromosome, position, alt, ref, sep = ":")
+      formatted_snp = paste(chr, pos, alt, ref, sep = ":")
   )]
  merged_snps <- unique(merged_snps, by = "formatted_snp")
  merged_snps <- unique(merged_snps, by = "ID")
-    
+ 
+ if (nrow(merged_snps) < 2) next  # Skip if no shared SNPs
+   
   #--------------------------------------------------
   # 7. Prepare Data for Coloc
   #--------------------------------------------------
@@ -123,14 +128,22 @@ for (gene in all_genes) {
   #--------------------------------------------------
   # 8. Run Coloc
   #--------------------------------------------------
-suppressWarnings(suppressMessages({
-  capture.output({
-    this_coloc <- coloc.abf(eqtl_dataset, gwas_dataset)
-  }, file = "/dev/null")
-})) 
+  suppressWarnings(suppressMessages({
+    capture.output({
+      result <- tryCatch({
+        coloc.abf(eqtl_dataset, gwas_dataset)
+      }, error = function(e) {
+        message(paste("Error in gene", gene, ":", e$message))
+        NULL  # Return NULL or some other value to indicate an error
+      })
+    }, file = "/dev/null")
+  })) 
+  
+  # If result is NULL, skip to the next gene
+  if (is.null(result)) next
     
   # Extract results
-  summary_vec <- this_coloc$summary
+  summary_vec <- result$summary
   
   # Store results
   coloc_results_list[[gene]] <- data.table(
@@ -139,7 +152,8 @@ suppressWarnings(suppressMessages({
     PP.H1 = summary_vec["PP.H1.abf"],
     PP.H2 = summary_vec["PP.H2.abf"],
     PP.H3 = summary_vec["PP.H3.abf"],
-    PP.H4 = summary_vec["PP.H4.abf"]
+    PP.H4 = summary_vec["PP.H4.abf"],
+    matched_variants = nrow(merged_snps)
   )
 }
 
@@ -154,10 +168,9 @@ coloc_results <- rbindlist(coloc_results_list)
 #--------------------------------------------------
 # 10. Save or export results
 #--------------------------------------------------
-gwas_file_prefix <- sub("\\.regenie(\\.tsv)?\\.gz$", "", basename(gwas))    
 
-fwrite(coloc_results, paste0(output_dir,"/coloc_",gwas_file_prefix,"_vs_",eqtl_cell,".txt"), sep = "\t", quote = FALSE)
+fwrite(coloc_results, paste0(output_dir,"/coloc_",gwas_file_prefix,"_vs_",eqtl_file_prefix,".txt"), sep = "\t", quote = FALSE)
+system(paste0("dx upload ",output_dir,"/coloc_",gwas_file_prefix,"_vs_",eqtl_file_prefix,".txt"," --destination project-Gv45qjQ09Vk2p6X7q5xJ42PV:/analysis_KJ/coloc_gwas_eqtls/results_based_sig_gwas/"))
 
 # View top colocalized genes
 #head(coloc_results)
-}
